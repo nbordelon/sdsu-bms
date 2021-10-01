@@ -1,6 +1,8 @@
 #include <Wire.h>
 
-int bqAddr = 0x08; //BQ76920 Uses the address 0x08 with its I2C communications
+//Initialize Global Variables
+
+int bqAddr = 0x08; //BQ76940 Uses the address 0x08 with its I2C communications
 float gain = 0;
 int offset = 0;
 byte statusLED = 13;
@@ -19,7 +21,7 @@ void alertPinISR()
 
 void setup() {
   
-  Serial.begin(9600);
+  Serial.begin(9600); //Baud Rate 9600
   Serial.println("BQ76940 Balancing IC Init...");
 
   Wire.begin();
@@ -43,21 +45,30 @@ void loop() {
   {
     Serial.print("Cell #");
     Serial.print(i);
-    Serial.print(": ")
-    cellVolts[i-1] = readVoltages(i)
+    Serial.print(": ");
+    cellVolts[i-1] = readVoltages(i);
     Serial.println(cellVolts[i-1]);
   }
 
   //Read the pack voltage and add it to a global float variable packVolt
 
-  Serial.println("Pack Voltage");
+  Serial.print("Pack Voltage: ");
   Serial.println(readPackVoltage());
   packVolt = readPackVoltage();
-  
 
-  //while(1);
-  
+  if(ISR_triggered)
+  {
+    Serial.println("ISR TRIGGERED, ALERT PIN HIGH");
+    Serial.print("0x");
+    Serial.println(readRegister(0x0),HEX); //Shows the System Status register in hex
 
+    //ALERT PIN HANDLING
+    //CHECK EACH SYSTEM STATUS BIT AND HANDLE ACCORDINGLY
+
+
+    ISR_triggered = false;
+  }
+  
   digitalWrite(statusLED, LOW);
   delay(1000);
 }
@@ -69,7 +80,15 @@ boolean initializeBQ(byte inrptPin)
 {
   //Enable Init Bits ADC_EN and CC_EN and CC_CFG
 
+  writeRegister(0x0B,0x19); //Data sheet specifies CC_CFG should be written 0x19
+
+  byte sys_ctrl1 = readRegister(0x04); //Enableing ADC_EN
+  sys_ctrl1 |= 1 << 4;
+  writeRegister(0x04,sys_ctrl1);
   
+  byte sys_ctrl2 = readRegister(0x05);
+  sys_ctrl2 |= 1 << 6;
+  writeRegister(0x05,sys_ctrl2);
   
   //Initialize Gain and Offset used to calculate voltage from ADC reading
   
@@ -80,7 +99,11 @@ boolean initializeBQ(byte inrptPin)
 
   pinMode(2, INPUT);
   attachInterrupt(0, alertPinISR, RISING);
+
+  return true;
 }
+
+//Read a single register, a byte / 8 bits, specified address in the argument
 
 byte readRegister(byte addrRegister)
 {
@@ -92,6 +115,9 @@ byte readRegister(byte addrRegister)
 
   return (Wire.read());
 }
+
+//Read two registers next to each other starting with the first one in succession.
+//Return the two registers concatenated together into a 16 bit integer variable.
 
 int doubleReadRegister(byte addrRegister)
 {
@@ -110,6 +136,8 @@ int doubleReadRegister(byte addrRegister)
   return (together);
 }
 
+//Write a byte of data into a register through I2C
+
 byte writeRegister(byte addrRegister, byte data)
 {
   Wire.beginTransmission(bqAddr);
@@ -119,8 +147,11 @@ byte writeRegister(byte addrRegister, byte data)
   Wire.beginTransmission(bqAddr);
   Wire.write(addrRegister);
   Wire.write(data);
-  Wire.endTransmission:
+  Wire.endTransmission();
 }
+
+//Read the gain given by the BQ76940 registers ADCgain1 and ADCgain2
+//Page 40 of data sheet GAIN = 365 uV/LSB + (ADCGAIN<4:0>in decimal) x (1 uV/LSB)
 
 int readGain()
 {
@@ -166,6 +197,8 @@ float readVoltages(byte numCell)
   return(cellVoltage);
 }
 
+//Read the pack voltage from the BAT_hi and BAT_low registers and return as a float
+
 float readPackVoltage()
 {
   unsigned int adcPackVolt = doubleReadRegister(0x2A);
@@ -176,9 +209,36 @@ float readPackVoltage()
   return(packVoltage / (float)1000);
 }
 
-//read the temp from the chips, 0 is the internal die temp and 1-3 are thermistors
+//Enable Cell Balancing on a specific cell number should be 1,2,3,4
+//4 is actually 5. 4 doesn't access a cell but I keep 4 as an input for simplicity.
 
-int readTemp(byte themistorNum)
+byte enableCellBalance(byte cellNum, boolean en)
+{
+  if(cellNum < 1 || cellNum > 4) return 0;
+  if(cellNum == 4) cellNum++;
+  
+  byte CELLBAL1 = readRegister(0x01);
+  CELLBAL1 |= 1 << (cellNum - 1);
+  writeRegister(0x01,CELLBAL1);
+
+  return 0;
+}
+
+//Read CoulombCounter Register and return a float value
+
+float readCC(void)
+{
+  int count = doubleReadRegister(0x32);
+
+  float count_uV = count * 8.44;
+
+  return(count_uV);
+}
+
+//read the temp from the chips, 0 is the internal die temp and 1-3 are thermistors
+//WIP
+
+int readTemp(byte thermistorNum)
 {
   if(thermistorNum < 0 || thermistorNum > 3) return(0);
   
