@@ -105,19 +105,22 @@ void loop() {
     Serial.print("Temperature = ");
     Serial.println(temp);
     
-    //Read Coulomb Counter Register and return a float to serial monitor
-    if(ccReady)
-    {
-      Serial.print("Coulomb Count: ");
-      Serial.println(readCC());
-      cCount = readCC();
-    }
+    
+    Serial.println(cCount);
     
     timeLoop = millis();
 
     
     OpenLCD.print("V1: "); //For 16x2 LCD
     OpenLCD.print(cellVolts[0]);
+
+    byte tempBB = readRegister(0x05);
+
+    tempBB |= (1<<1);
+
+    writeRegister(0x05,tempBB);
+
+    Serial.println(readRegister(0x05),BIN);
     
   }
 
@@ -132,11 +135,58 @@ void loop() {
 
     //ALERT PIN HANDLING
     //CHECK EACH SYSTEM STATUS BIT AND HANDLE ACCORDINGLY
-    
     byte newSystemStatus = 0;
-    
-    
+   
+    if(sysStatus & (1<<7)) //CC_READY BIT
+    {
+      //Read Coulomb Counter Register and return a float to serial monitor
+      Serial.print("Coulomb Count Ready: ");
+      Serial.println(readCC());
+      cCount += readCC();
+      newSystemStatus |= (1<<7);
+      
+    }
 
+    if(sysStatus & (1<<5)) //DEVICE_XREADY
+    {
+      Serial.println("Device_Xready - Internal fault");
+      newSystemStatus |= (1<<5);
+    }
+
+    if(sysStatus & (1<<4)) //OVRD_ALERT
+    {
+      Serial.println("Override Alert");
+      newSystemStatus |= (1<<4);
+    }
+
+    if(sysStatus & (1<<3)) //UV
+    {
+      Serial.println("Undervoltage");
+      newSystemStatus |= (1<<3);
+    }
+
+    if(sysStatus & (1<<2)) //OV
+    {
+      Serial.println("Overvoltage");
+      newSystemStatus |= (1<<2);
+    }
+
+    if(sysStatus & (1<<1)) //SCD
+    {
+      Serial.println("Short Circuit Alert");
+      newSystemStatus |= (1<<1);
+    }
+
+    if(sysStatus & (1)) //OCD
+    {
+      Serial.println("Over Current Alert");
+      newSystemStatus |= (1);
+    }
+
+    writeRegister(0x0,newSystemStatus);
+
+    Serial.println(readRegister(0x0));
+    
     ISR_triggered = false;
   }
   
