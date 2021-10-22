@@ -1,14 +1,26 @@
 #include <Wire.h>
+#include <SoftwareSerial.h>
+
+//NEXT ADD SHIP MAYBE, TEMP FUNCTION, ALERT HANDLING, AND FINANLIZE INIT.
+//TEST
+//https://github.com/nseidle/BMS/blob/master/firmware/SparkFun_bq769x0/SparkFun_bq769x0.ino
 
 //Initialize Global Variables
 
-int bqAddr = 0x08; //BQ76940 Uses the address 0x08 with its I2C communications
+int bqAddr = 0x08; //BQ76920 Uses the address 0x08 with its I2C communications
 float gain = 0;
 int offset = 0;
 byte statusLED = 13;
 float cellVolts[4];
 float packVolt = 0.0;
+float cCount = 0.0;
 volatile boolean ISR_triggered = false;
+long timeLoop;
+boolean ccReady = false;
+
+SoftwareSerial OpenLCD(6, 7); //RX, TX
+byte counter = 0;
+byte contrast = 4;
 
 //Interrupt Service Routine to handle an Alert pin input from the BQ
 
@@ -22,49 +34,108 @@ void alertPinISR()
 void setup() {
   
   Serial.begin(9600); //Baud Rate 9600
-  Serial.println("BQ76940 Balancing IC Init...");
+  Serial.println("BQ76920 Balancing IC Init...");
 
   Wire.begin();
 
-  pinMode(statusLED,OUTPUT);
-  digitalWrite(statusLED, LOW); //Arduino LED OFF at Start
+ // pinMode(statusLED,OUTPUT);
+ // digitalWrite(statusLED, LOW); //Arduino LED OFF at Start
 
-  initializeBQ(2);
+  if(initializeBQ(2) == false)
+  {
+    Serial.println("BQ76940 failed to respond - check your wiring");
+    Serial.println("Hanging... Restart please.");
+    while(1);
+  }
+  else
+  {
+    Serial.println("Initialized Successfully!");
+  }
+
+  OpenLCD.begin(9600); //Start communication with OpenLCD
+
+  //Send contrast setting
+  OpenLCD.write('|'); //Put LCD into setting mode
+  OpenLCD.write(24); //Send contrast command
+  OpenLCD.write(contrast);
+
+  timeLoop = millis();
 }
 
 //Continuosly loops through out runtime
 
 void loop() {
   // put your main code here, to run repeatedly:
-
-  digitalWrite(statusLED,HIGH);
+    
+  //digitalWrite(statusLED,HIGH);
 
   //Read each individual cell voltage and add them to a float array cellVolts
 
-  for(byte i = 1; i < 5 ; i ++)
+  if(millis() - timeLoop > 1000)
   {
-    Serial.print("Cell #");
-    Serial.print(i);
-    Serial.print(": ");
-    cellVolts[i-1] = readVoltages(i);
-    Serial.println(cellVolts[i-1]);
+
+    
+
+    //read individual cell voltages
+    OpenLCD.write('|'); //Setting character
+    OpenLCD.write('-'); //Clear display
+    for(byte i = 1; i < 5 ; i ++)
+    {
+      Serial.print("Cell #");
+      OpenLCD.print("V");
+      OpenLCD.print(i);
+      OpenLCD.print(":");
+      Serial.print(i);
+      Serial.print(": ");
+      cellVolts[i-1] = readVoltages(i);
+      Serial.println(cellVolts[i-1]);
+      OpenLCD.print(cellVolts[i-1]);
+      OpenLCD.print(" ");
+    }
+
+    //Read the pack voltage and add it to a global float variable packVolt
+
+    Serial.print("Pack Voltage: ");
+    Serial.println(readPackVoltage());
+    packVolt = readPackVoltage();
+
+    //Read the temperature and set it in a global variable.
+
+    float temp = readTemp(0);
+    Serial.print("Temperature = ");
+    Serial.println(temp);
+    
+    //Read Coulomb Counter Register and return a float to serial monitor
+    if(ccReady)
+    {
+      Serial.print("Coulomb Count: ");
+      Serial.println(readCC());
+      cCount = readCC();
+    }
+    
+    timeLoop = millis();
+
+    
+    OpenLCD.print("V1: "); //For 16x2 LCD
+    OpenLCD.print(cellVolts[0]);
+    
   }
 
-  //Read the pack voltage and add it to a global float variable packVolt
-
-  Serial.print("Pack Voltage: ");
-  Serial.println(readPackVoltage());
-  packVolt = readPackVoltage();
-
-  if(ISR_triggered)
+  if(ISR_triggered == true)
   {
+
+    byte sysStatus = readRegister(0x0);
+    
     Serial.println("ISR TRIGGERED, ALERT PIN HIGH");
-    Serial.print("0x");
-    Serial.println(readRegister(0x0),HEX); //Shows the System Status register in hex
+    Serial.print("0b");
+    Serial.println(sysStatus,BIN);//Shows the System Status register in binary
 
     //ALERT PIN HANDLING
     //CHECK EACH SYSTEM STATUS BIT AND HANDLE ACCORDINGLY
-
+    
+    byte newSystemStatus = 0;
+    
+    
 
     ISR_triggered = false;
   }
@@ -82,23 +153,36 @@ boolean initializeBQ(byte inrptPin)
 
   writeRegister(0x0B,0x19); //Data sheet specifies CC_CFG should be written 0x19
 
-  byte sys_ctrl1 = readRegister(0x04); //Enableing ADC_EN
+  byte sys_ctrl1 = readRegister(0x04); //Enabling ADC_EN
   sys_ctrl1 |= 1 << 4;
   writeRegister(0x04,sys_ctrl1);
   
-  byte sys_ctrl2 = readRegister(0x05);
+  byte sys_ctrl2 = readRegister(0x05); //Enabling CC_EN
   sys_ctrl2 |= 1 << 6;
   writeRegister(0x05,sys_ctrl2);
   
   //Initialize Gain and Offset used to calculate voltage from ADC reading
   
-  gain = readGain();
+  gain = readGain() / (float)1000;
+  Serial.print("Gain: ");
+  Serial.print(gain);
+  Serial.println("mV");
+  
   offset = readOffset();
+  Serial.print("offset: ");
+  Serial.print(offset);
+  Serial.println("mV");
 
   //Initialize interrupt on pin 2 connected to the ALERT pin from the BQ
 
   pinMode(2, INPUT);
   attachInterrupt(0, alertPinISR, RISING);
+
+  for(int l = 1; l < 5; l++)
+  {
+    enableCellBalance(l,true);
+  }
+  
 
   return true;
 }
@@ -218,9 +302,18 @@ byte enableCellBalance(byte cellNum, boolean en)
   if(cellNum == 4) cellNum++;
   
   byte CELLBAL1 = readRegister(0x01);
-  CELLBAL1 |= 1 << (cellNum - 1);
-  writeRegister(0x01,CELLBAL1);
 
+  if(en)
+  {
+    CELLBAL1 |= 1 << (cellNum - 1);
+    writeRegister(0x01,CELLBAL1);
+  }
+  else
+  {
+    CELLBAL1 &= ~(1 << (cellNum - 1));
+    writeRegister(0x01,CELLBAL1);
+  }
+  
   return 0;
 }
 
@@ -238,8 +331,27 @@ float readCC(void)
 //read the temp from the chips, 0 is the internal die temp and 1-3 are thermistors
 //WIP
 
-int readTemp(byte thermistorNum)
+float readTemp(byte thermistorNum)
 {
   if(thermistorNum < 0 || thermistorNum > 3) return(0);
+
+  byte controlReg = readRegister(0x04);
+  controlReg &= ~(1<<3);
+  writeRegister(0x04,controlReg);
+
+  //Serial.println("Waiting 2...");
+  //delay(2000);
+
+  int thermVal = doubleReadRegister(0x2C);
+
+  float thermVolt = thermVal * (float)382;
+
+  thermVolt /= (float)1000000;
+
+  float temperatureC = 25.0 - ((thermVolt - 1.2) / 0.0042);
+  
+  return(temperatureC);
   
 }
+
+//Read and Set OV UV
