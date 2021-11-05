@@ -1,7 +1,7 @@
 #include <Wire.h>
 #include <SoftwareSerial.h>
 
-//NEXT ADD SHIP MAYBE, TEMP FUNCTION, ALERT HANDLING, AND FINANLIZE INIT.
+//NEXT ADD SHIP MAYBE, AND FINANLIZE INIT.
 //TEST
 //https://github.com/nseidle/BMS/blob/master/firmware/SparkFun_bq769x0/SparkFun_bq769x0.ino
 
@@ -14,6 +14,7 @@ byte statusLED = 13;
 float cellVolts[4];
 float packVolt = 0.0;
 float cCount = 0.0;
+float temp = 0.0;
 volatile boolean ISR_triggered = false;
 long timeLoop;
 boolean ccReady = false;
@@ -21,26 +22,29 @@ boolean ccReady = false;
 SoftwareSerial OpenLCD(6, 7); //RX, TX
 byte counter = 0;
 byte contrast = 4;
+int buttonS = 0;
+byte incrementB = 0;
 
-//Interrupt Service Routine to handle an Alert pin input from the BQ
+//////////////////////////////////////////////////////////////////////////////
+//////Interrupt Service Routine to handle an Alert pin input from the BQ//////
 
 void alertPinISR()
 {
   ISR_triggered = true;
 }
 
-//Runs once at the beginning of the code
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+//////Runs once at the beginning of the code//////////////////////////////////
 
 void setup() {
-  
   Serial.begin(9600); //Baud Rate 9600
   Serial.println("BQ76920 Balancing IC Init...");
 
   Wire.begin();
-
- // pinMode(statusLED,OUTPUT);
- // digitalWrite(statusLED, LOW); //Arduino LED OFF at Start
-
+  
   if(initializeBQ(2) == false)
   {
     Serial.println("BQ76940 failed to respond - check your wiring");
@@ -60,37 +64,49 @@ void setup() {
   OpenLCD.write(contrast);
 
   timeLoop = millis();
+  pinMode(3,INPUT);
 }
 
-//Continuosly loops through out runtime
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+//////Continuosly loops through out runtime///////////////////////////////////
 
 void loop() {
   // put your main code here, to run repeatedly:
-    
-  //digitalWrite(statusLED,HIGH);
 
   //Read each individual cell voltage and add them to a float array cellVolts
+
+    buttonS = digitalRead(3);
+    Serial.println(buttonS);
+
+    if(buttonS == HIGH)
+    {
+      if(incrementB < 2)
+      {
+        incrementB++; 
+      }
+      else
+      {
+        incrementB = 0;
+      }
+    }
+    else{
+
+    }
+
 
   if(millis() - timeLoop > 1000)
   {
 
-    
-
     //read individual cell voltages
-    OpenLCD.write('|'); //Setting character
-    OpenLCD.write('-'); //Clear display
     for(byte i = 1; i < 5 ; i ++)
     {
-      Serial.print("Cell #");
-      OpenLCD.print("V");
-      OpenLCD.print(i);
-      OpenLCD.print(":");
-      Serial.print(i);
-      Serial.print(": ");
       cellVolts[i-1] = readVoltages(i);
-      Serial.println(cellVolts[i-1]);
-      OpenLCD.print(cellVolts[i-1]);
-      OpenLCD.print(" ");
+      Serial.print("V");Serial.print(i);
+      Serial.print(": ");Serial.print(cellVolts[i-1]);
+      Serial.print(" ");
     }
 
     //Read the pack voltage and add it to a global float variable packVolt
@@ -101,26 +117,28 @@ void loop() {
 
     //Read the temperature and set it in a global variable.
 
-    float temp = readTemp(0);
+    temp = readTemp(0);
     Serial.print("Temperature = ");
     Serial.println(temp);
-    
-    
+
+    Serial.print("Coulomb Count: ");
     Serial.println(cCount);
     
     timeLoop = millis();
 
+    lcdScreenOutput(incrementB + 1);
+
     
-    OpenLCD.print("V1: "); //For 16x2 LCD
-    OpenLCD.print(cellVolts[0]);
+//    OpenLCD.print("V1: "); //For 16x2 LCD
+//    OpenLCD.print(cellVolts[0]);
 
-    byte tempBB = readRegister(0x05);
-
-    tempBB |= (1<<1);
-
-    writeRegister(0x05,tempBB);
-
-    Serial.println(readRegister(0x05),BIN);
+//    byte tempBB = readRegister(0x05);
+//
+//    tempBB |= (1<<1);
+//
+//    writeRegister(0x05,tempBB);
+//
+//    Serial.println(readRegister(0x05),BIN);
     
   }
 
@@ -128,10 +146,14 @@ void loop() {
   {
 
     byte sysStatus = readRegister(0x0);
-    
+
+    if(sysStatus != 0b10000000)
+    {
     Serial.println("ISR TRIGGERED, ALERT PIN HIGH");
     Serial.print("0b");
-    Serial.println(sysStatus,BIN);//Shows the System Status register in binary
+    Serial.println(sysStatus,BIN);//Shows the System Status register in binary    
+    }
+    
 
     //ALERT PIN HANDLING
     //CHECK EACH SYSTEM STATUS BIT AND HANDLE ACCORDINGLY
@@ -140,8 +162,8 @@ void loop() {
     if(sysStatus & (1<<7)) //CC_READY BIT
     {
       //Read Coulomb Counter Register and return a float to serial monitor
-      Serial.print("Coulomb Count Ready: ");
-      Serial.println(readCC());
+      //Serial.print("Coulomb Count Ready: ");
+      //Serial.println(readCC());
       cCount += readCC();
       newSystemStatus |= (1<<7);
       
@@ -194,8 +216,11 @@ void loop() {
   delay(1000);
 }
 
-//Ran in the setup block, Initializes pins for correct run mode 
-//and initializes global variables
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+////////Ran in the setup block, Initializes pins for correct run mode/////////
 
 boolean initializeBQ(byte inrptPin)
 {
@@ -228,16 +253,110 @@ boolean initializeBQ(byte inrptPin)
   pinMode(2, INPUT);
   attachInterrupt(0, alertPinISR, RISING);
 
-  for(int l = 1; l < 5; l++)
-  {
-    enableCellBalance(l,true);
-  }
+//  for(int l = 1; l < 5; l++)
+//  {
+//    enableCellBalance(l,true);
+//  }
   
 
   return true;
 }
 
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
 //Read a single register, a byte / 8 bits, specified address in the argument
+
+//bool enDSGfet(bool en)
+//{
+//  if(en)
+//  {
+//    return true;
+//  }
+//  else
+//  {
+//    return false;
+//  }
+//}
+//
+//bool enCHGfet(bool en)
+//{
+//  if(en)
+//  {
+//    return true;
+//  }
+//  else
+//  {
+//    return false;
+//  }
+//}
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//
+////read individual cell voltages
+//    OpenLCD.write('|'); //Setting character
+//    OpenLCD.write('-'); //Clear display
+//    for(byte i = 1; i < 5 ; i ++)
+//    {
+////      Serial.print("Cell #");
+////      OpenLCD.print("V");
+////      OpenLCD.print(i);
+////      OpenLCD.print(":");
+////      Serial.print(i);
+////      Serial.print(": ");
+//      cellVolts[i-1] = readVoltages(i);
+////      Serial.println(cellVolts[i-1]);
+////      OpenLCD.print(cellVolts[i-1]);
+////      OpenLCD.print(" ");
+//    }
+
+void lcdScreenOutput(byte buttonIncrement)
+{
+  OpenLCD.write('|'); //Setting character
+  OpenLCD.write('-'); //Clear display
+  switch(buttonIncrement)
+  {
+    case 1: //Individual Voltages
+    {
+      for(byte i = 1; i < 5 ; i ++)
+      {
+        OpenLCD.print("V");
+        OpenLCD.print(i);
+        OpenLCD.print(":");
+        OpenLCD.print(cellVolts[i-1]);
+        OpenLCD.print(" ");
+      }
+      break;
+    }
+    case 2: //Pack Voltage and Temp
+    {
+      OpenLCD.print("Pack V: ");
+      OpenLCD.print(packVolt);
+      OpenLCD.print("    ");
+      OpenLCD.print("Temp: ");
+      OpenLCD.print(temp); 
+      OpenLCD.print("      ");
+      break;
+    }
+    case 3: //Percent Charge
+    {
+      OpenLCD.print("Percent CHG: ");
+      OpenLCD.print("99%");
+      OpenLCD.print("Out Current: ");
+      OpenLCD.print("10A");
+      break;
+    }
+    default:
+    {
+      Serial.print("LCD screen switch case not catching.");
+      break;
+    }
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
 
 byte readRegister(byte addrRegister)
 {
@@ -249,6 +368,12 @@ byte readRegister(byte addrRegister)
 
   return (Wire.read());
 }
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
 
 //Read two registers next to each other starting with the first one in succession.
 //Return the two registers concatenated together into a 16 bit integer variable.
@@ -269,6 +394,12 @@ int doubleReadRegister(byte addrRegister)
 
   return (together);
 }
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
 
 //Write a byte of data into a register through I2C
 
@@ -405,3 +536,9 @@ float readTemp(byte thermistorNum)
 }
 
 //Read and Set OV UV
+
+void initOVUV(){
+
+  
+  
+}
