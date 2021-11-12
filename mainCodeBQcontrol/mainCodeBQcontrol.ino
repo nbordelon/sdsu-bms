@@ -17,7 +17,10 @@ float cCount = 0.0;
 float temp = 0.0;
 volatile boolean ISR_triggered = false;
 long timeLoop;
+long timeLoop2;
 boolean ccReady = false;
+boolean balFlag = false;
+boolean balDone = false;
 
 SoftwareSerial OpenLCD(6, 7); //RX, TX
 byte counter = 0;
@@ -64,7 +67,10 @@ void setup() {
   OpenLCD.write(contrast);
 
   timeLoop = millis();
+  timeLoop2 = millis();
   pinMode(3,INPUT);
+
+
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -78,6 +84,7 @@ void loop() {
 
   //Read each individual cell voltage and add them to a float array cellVolts
 
+  //Handling Button to adjust LCD Screen
     buttonS = digitalRead(3);
     Serial.println(buttonS);
 
@@ -132,13 +139,7 @@ void loop() {
 //    OpenLCD.print("V1: "); //For 16x2 LCD
 //    OpenLCD.print(cellVolts[0]);
 
-//    byte tempBB = readRegister(0x05);
-//
-//    tempBB |= (1<<1);
-//
-//    writeRegister(0x05,tempBB);
-//
-//    Serial.println(readRegister(0x05),BIN);
+    
     
   }
 
@@ -190,6 +191,7 @@ void loop() {
     if(sysStatus & (1<<2)) //OV
     {
       Serial.println("Overvoltage");
+      enCHGfet(true);
       newSystemStatus |= (1<<2);
     }
 
@@ -212,7 +214,72 @@ void loop() {
     ISR_triggered = false;
   }
   
-  digitalWrite(statusLED, LOW);
+  if(millis() - timeLoop2 > 60000)
+  {
+    balDone = true;
+    
+    if(cCount > 0) //CHARGING
+    {
+      for(int j = 0; j < 4; j++)
+      {
+        for(int k = 0; k < 4; k++)
+        {
+          if(j != k)
+          {
+            if(!(-0.05 < (cellVolts[j] - cellVolts[k]) < 0.05))
+            {
+              for(int h = 1; h < 5; h++) 
+                {
+                  enableCellBalance(h,true);
+                  balFlag = true;
+                  Serial.println("BALANCING ON");
+                }
+                break;
+            }
+          }
+          if(balFlag) break;
+        }
+        if(balFlag) break;
+      }
+    }
+    else //NOT CHARGING
+    {
+      for(int o = 1; o < 5; o++) 
+         {
+           enableCellBalance(o,false);
+           Serial.println("BALANCING OFF");
+         }
+    }
+
+    if(balFlag)
+    {
+      for(int j2 = 0; j2 < 4; j2++)
+      {
+        for(int k2 = 0; k2 < 4; k2++)
+        {
+          if(j2 != k2)
+          {
+            if(!(-0.02 < (cellVolts[j2] - cellVolts[k2]) < 0.02))
+            {
+              balDone = false;
+              
+            }
+          }
+        }
+      }
+    }
+
+    if(balDone)
+    {
+      for(int o2 = 1; o2 < 5; o2++) 
+                 {
+                    enableCellBalance(o2,false);
+                    Serial.println("BALANCING OFF");
+                 }
+    }
+    
+    timeLoop2 = millis();
+  }
   delay(1000);
 }
 
@@ -253,13 +320,9 @@ boolean initializeBQ(byte inrptPin)
   pinMode(2, INPUT);
   attachInterrupt(0, alertPinISR, RISING);
 
-//  for(int l = 1; l < 5; l++)
-//  {
-//    enableCellBalance(l,true);
-//  }
-  
+  //Initializing Overvoltage and UnderVoltage Threshholds
 
-  return true;
+  initOVUV(3.80,2.80);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -267,29 +330,37 @@ boolean initializeBQ(byte inrptPin)
 
 //Read a single register, a byte / 8 bits, specified address in the argument
 
-//bool enDSGfet(bool en)
-//{
-//  if(en)
-//  {
-//    return true;
-//  }
-//  else
-//  {
-//    return false;
-//  }
-//}
-//
-//bool enCHGfet(bool en)
-//{
-//  if(en)
-//  {
-//    return true;
-//  }
-//  else
-//  {
-//    return false;
-//  }
-//}
+void enDSGfet(boolean en)
+{
+  if(en){
+    byte tempBB = readRegister(0x05);
+    tempBB |= (0b10);
+    writeRegister(0x05,tempBB);
+  }
+  else
+  {
+    byte tempBB = readRegister(0x05);
+    tempBB &= ~(0b10);
+    writeRegister(0x05,tempBB);
+  }
+
+}
+
+void enCHGfet(boolean en)
+{
+  if(en){
+    byte tempBB = readRegister(0x05);
+    tempBB |= (0b01);
+    writeRegister(0x05,tempBB);
+  }
+  else
+  {
+    byte tempBB = readRegister(0x05);
+    tempBB &= ~(0b01);
+    writeRegister(0x05,tempBB);
+  }
+
+}
 
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
@@ -537,8 +608,26 @@ float readTemp(byte thermistorNum)
 
 //Read and Set OV UV
 
-void initOVUV(){
+void initOVUV(float over, float under){
 
-  
+  over *= 1000;
+  under *=1000;
+
+  over -= offset;
+  over /= gain;
+
+  under -= offset;
+  under/= gain;
+
+  int overVal = (int) over;
+  int underVal = (int) under;
+
+  overVal >>=4;
+  overVal &= 0x00FF;
+  underVal >>=4;
+  underVal &= 0x00FF;
+
+  writeRegister(0x09,overVal);
+  writeRegister(0x0A,underVal);
   
 }
