@@ -1,8 +1,6 @@
 #include <Wire.h>
 #include <SoftwareSerial.h>
 
-//NEXT ADD SHIP MAYBE, AND FINANLIZE INIT.
-//TEST
 //https://github.com/nseidle/BMS/blob/master/firmware/SparkFun_bq769x0/SparkFun_bq769x0.ino
 
 //Initialize Global Variables
@@ -21,7 +19,6 @@ long timeLoop2;
 boolean ccReady = false;
 boolean balFlag = false;
 boolean balDone = false;
-
 SoftwareSerial OpenLCD(6, 7); //RX, TX
 byte counter = 0;
 byte contrast = 4;
@@ -130,6 +127,8 @@ void loop() {
 
     Serial.print("Coulomb Count: ");
     Serial.println(cCount);
+
+    //Maybe need to get total Coulomb Count and base percentage off that.
     
     timeLoop = millis();
 
@@ -139,8 +138,6 @@ void loop() {
 //    OpenLCD.print("V1: "); //For 16x2 LCD
 //    OpenLCD.print(cellVolts[0]);
 
-    
-    
   }
 
   if(ISR_triggered == true)
@@ -155,7 +152,6 @@ void loop() {
     Serial.println(sysStatus,BIN);//Shows the System Status register in binary    
     }
     
-
     //ALERT PIN HANDLING
     //CHECK EACH SYSTEM STATUS BIT AND HANDLE ACCORDINGLY
     byte newSystemStatus = 0;
@@ -184,13 +180,14 @@ void loop() {
 
     if(sysStatus & (1<<3)) //UV
     {
-      Serial.println("Undervoltage");
+      Serial.println("Undervoltage Need Operator Intervention");
+      enDSGfet(true);
       newSystemStatus |= (1<<3);
     }
 
     if(sysStatus & (1<<2)) //OV
     {
-      Serial.println("Overvoltage");
+      Serial.println("Overvoltage Need Operator Intervention");
       enCHGfet(true);
       newSystemStatus |= (1<<2);
     }
@@ -343,7 +340,6 @@ void enDSGfet(boolean en)
     tempBB &= ~(0b10);
     writeRegister(0x05,tempBB);
   }
-
 }
 
 void enCHGfet(boolean en)
@@ -359,28 +355,10 @@ void enCHGfet(boolean en)
     tempBB &= ~(0b01);
     writeRegister(0x05,tempBB);
   }
-
 }
 
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
-//
-////read individual cell voltages
-//    OpenLCD.write('|'); //Setting character
-//    OpenLCD.write('-'); //Clear display
-//    for(byte i = 1; i < 5 ; i ++)
-//    {
-////      Serial.print("Cell #");
-////      OpenLCD.print("V");
-////      OpenLCD.print(i);
-////      OpenLCD.print(":");
-////      Serial.print(i);
-////      Serial.print(": ");
-//      cellVolts[i-1] = readVoltages(i);
-////      Serial.println(cellVolts[i-1]);
-////      OpenLCD.print(cellVolts[i-1]);
-////      OpenLCD.print(" ");
-//    }
 
 void lcdScreenOutput(byte buttonIncrement)
 {
