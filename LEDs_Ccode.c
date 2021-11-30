@@ -5,8 +5,8 @@
 //  Created by Abdullah Almethen on 8/14/21.
 //
 
-//#include <stdio.h>
-//
+#include <stdio.h>
+
 volatile short LED_Key_Pressed = 0;
 void LEDs_Indicator(){
     
