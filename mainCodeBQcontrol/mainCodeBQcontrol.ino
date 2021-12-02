@@ -2,8 +2,8 @@
 #include <SoftwareSerial.h>
 
 //https://github.com/nseidle/BMS/blob/master/firmware/SparkFun_bq769x0/SparkFun_bq769x0.ino
-
-//Initialize Global Variables
+//////////////////////////////////////////////////////////////////////////////
+////////////////////Initialize Global Variables///////////////////////////////
 
 int bqAddr = 0x18; //BQ76920 Uses the address 0x08 with its I2C communications
 float gain = 0;
@@ -17,6 +17,7 @@ float temp = 0.0;
 volatile boolean ISR_triggered = false;
 long timeLoop;
 long timeLoop2;
+long ledLoop;
 boolean ccReady = false;
 boolean balFlag = false;
 boolean balDone = false;
@@ -24,9 +25,14 @@ SoftwareSerial OpenLCD(0, 1); //RX, TX
 byte counter = 0;
 byte contrast = 4;
 int buttonS = 0;
+int buttonR = 0;
 byte incrementB = 0;
 float outCurrent = 0.0;
+boolean resetS = false;
+float chargeP = 0.0;
 
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////
 //////Interrupt Service Routine to handle an Alert pin input from the BQ//////
@@ -36,6 +42,8 @@ void alertPinISR()
   ISR_triggered = true;
 }
 
+
+
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
 
@@ -43,8 +51,6 @@ void alertPinISR()
 //////Runs once at the beginning of the code//////////////////////////////////
 
 void setup() {
-  //Serial.begin(9600); //Baud Rate 9600
-  //Serial.println("BQ76920 Balancing IC Init...");
   OpenLCD.begin(9600); //Start communication with OpenLCD
 
   //Send contrast setting
@@ -53,31 +59,40 @@ void setup() {
   OpenLCD.write(contrast);
   OpenLCD.write('|'); //Setting character
   OpenLCD.write('-'); //Clear display
-  Wire.begin();
+  Wire.begin(); //Start I2C Comms
+  
+  OpenLCD.print("I2C start");
 
-  OpenLCD.print("start");
-  //OpenLCD.print(readRegister(0x01));
-  //OpenLCD.print("uh");
   if(initializeBQ(2) == false)
   {
-    //Serial.println("BQ76940 failed to respond - check your wiring");
-    //Serial.println("Hanging... Restart please.");
-    OpenLCD.print("stuck");
+    OpenLCD.print("BQ Init Failed. Hanging......");
     while(1);
   }
   else
   {
-    //Serial.println("Initialized Successfully!");
+    OpenLCD.print("BQ Init Success");
   }
 
+  //Clear System Status Register on Reset
+  writeRegister(0x00,0b11111111);
+
+  enCHGfet(true);
+  enDSGfet(true);
   
-
-  OpenLCD.print("start");
-
   timeLoop = millis();
   timeLoop2 = millis();
-  pinMode(4,INPUT);
+  ledLoop = millis();
+  
+  //writeRegister(0x06,0b10000111);
 
+  pinMode(3,INPUT); //reset Switch
+  pinMode(4,INPUT); //button
+  pinMode(5, OUTPUT);//red1
+  pinMode(6, OUTPUT);//green2
+  pinMode(7, OUTPUT);//green3  
+  pinMode(8, OUTPUT);//green4    
+  pinMode(9, OUTPUT);//green5
+  pinMode(10,OUTPUT);//statusLED
 
 }
 
@@ -88,15 +103,12 @@ void setup() {
 //////Continuosly loops through out runtime///////////////////////////////////
 
 void loop() {
-  // put your main code here, to run repeatedly:
-
-  //Read each individual cell voltage and add them to a float array cellVolts
-
+  
   //Handling Button to adjust LCD Screen
     buttonS = digitalRead(4);
-    //Serial.println(buttonS);
+    buttonR = digitalRead(3);
 
-    if(buttonS == HIGH)
+    if(buttonS == LOW)
     {
       if(incrementB < 2)
       {
@@ -111,6 +123,38 @@ void loop() {
 
     }
 
+    if(outCurrent > 15.00)
+    {
+      enDSGfet(false);
+    }
+    else
+    {
+      enDSGfet(true);
+    }
+
+    if(temp > 30.0)
+    {
+      enCHGfet(false);
+      enDSGfet(false);    
+    }
+
+    if(buttonR == LOW)
+    {
+      writeRegister(0x0,0xFF);
+
+      cCount = 0;
+      outCurrent = 0;
+      digitalWrite(10,HIGH);
+      resetS = true;  
+    }
+    else
+    {
+      digitalWrite(10,LOW);
+      resetS = false;
+    }
+
+
+
 
   if(millis() - timeLoop > 1000)
   {
@@ -119,56 +163,42 @@ void loop() {
     for(byte i = 1; i < 5 ; i ++)
     {
       cellVolts[i-1] = readVoltages(i);
-      //Serial.print("V");Serial.print(i);
-      //Serial.print(": ");Serial.print(cellVolts[i-1]);
-      //Serial.print(" ");
     }
 
     //Read the pack voltage and add it to a global float variable packVolt
-
-    //Serial.print("Pack Voltage: ");
-    //Serial.println(readPackVoltage());
+    
     packVolt = readPackVoltage();
+
+    
+    chargeP = (14.6 - packVolt) / 4.6;
+    if(chargeP < 0) chargeP = 0;
 
     //Read the temperature and set it in a global variable.
 
     temp = readTemp(0);
-    //Serial.print("Temperature = ");
-    //Serial.println(temp);
 
-    //Serial.print("Coulomb Count: ");
-    //Serial.println(cCount);
-
-    if(prevcCount != 0.0)
+    if(prevcCount != 0.0 && cCount != 0.0)
     {
-      outCurrent = cCount / (cCount - prevcCount);
+      outCurrent = (cCount - prevcCount+ 220) / 420;
     }
-    
-    prevcCount = cCount;
 
-    //Maybe need to get total Coulomb Count and base percentage off that.
+//    OpenLCD.print(prevcCount);
+//    OpenLCD.print(" ");
+//    OpenLCD.print(cCount);
+//    OpenLCD.print(" "); 
+    prevcCount = cCount;
     
     timeLoop = millis();
 
     lcdScreenOutput(incrementB + 1);
 
-    
-//    OpenLCD.print("V1: "); //For 16x2 LCD
-//    OpenLCD.print(cellVolts[0]);
-
+    chargePercentage(chargeP);
   }
 
-  if(ISR_triggered == true)
+  if(ISR_triggered == true )
   {
 
     byte sysStatus = readRegister(0x0);
-
-    if(sysStatus != 0b10000000)
-    {
-    //Serial.println("ISR TRIGGERED, ALERT PIN HIGH");
-    //Serial.print("0b");
-    //Serial.println(sysStatus,BIN);//Shows the System Status register in binary    
-    }
     
     //ALERT PIN HANDLING
     //CHECK EACH SYSTEM STATUS BIT AND HANDLE ACCORDINGLY
@@ -177,67 +207,70 @@ void loop() {
     if(sysStatus & (1<<7)) //CC_READY BIT
     {
       //Read Coulomb Counter Register and return a float to serial monitor
-      //Serial.print("Coulomb Count Ready: ");
-      //Serial.println(readCC());
       cCount += readCC();
       newSystemStatus |= (1<<7);
-      
     }
 
     if(sysStatus & (1<<5)) //DEVICE_XREADY
     {
-      //Serial.println("Device_Xready - Internal fault");
       newSystemStatus |= (1<<5);
     }
 
     if(sysStatus & (1<<4)) //OVRD_ALERT
     {
-      //Serial.println("Override Alert");
       newSystemStatus |= (1<<4);
     }
 
     if(sysStatus & (1<<3)) //UV
     {
-      //Serial.println("Undervoltage Need Operator Intervention");
       enDSGfet(true);
-      //OpenLCD.write('|'); //Setting character
-      //OpenLCD.write('-'); //Clear display
-      //OpenLCD.print("Op Charge bat");
-     // while(1);
+      OpenLCD.write('|'); //Setting character
+      OpenLCD.write('-'); //Clear display
+      OpenLCD.print("UV Alert Need Op");
+      OpenLCD.print("Reset System.");
+      while(!resetS);
       newSystemStatus |= (1<<3);
     }
 
     if(sysStatus & (1<<2)) //OV
     {
-      //Serial.println("Overvoltage Need Operator Intervention");
       enCHGfet(true);
-      //OpenLCD.write('|'); //Setting character
-      //OpenLCD.write('-'); //Clear display
-      //OpenLCD.print("Op Discharge Bat");
-      //while(1);
+      OpenLCD.write('|'); //Setting character
+      OpenLCD.write('-'); //Clear display
+      OpenLCD.print("OV Alert Need Op");
+      OpenLCD.print("Reset System.");
+      while(!resetS);
       newSystemStatus |= (1<<2);
     }
 
     if(sysStatus & (1<<1)) //SCD
     {
-      //Serial.println("Short Circuit Alert");
+      enDSGfet(true);
+      OpenLCD.write('|'); //Setting character
+      OpenLCD.write('-'); //Clear display
+      OpenLCD.print("SCD Alert Need   ");
+      OpenLCD.print("Op Reset System.");
+      while(!resetS);
       newSystemStatus |= (1<<1);
     }
 
     if(sysStatus & (1)) //OCD
     {
-      //Serial.println("Over Current Alert");
+      enDSGfet(true);
+      OpenLCD.write('|'); //Setting character
+      OpenLCD.write('-'); //Clear display
+      OpenLCD.print("OCD Alert Need   ");
+      OpenLCD.print("Op Reset System.");
+      while(!resetS);
       newSystemStatus |= (1);
     }
 
     writeRegister(0x0,newSystemStatus);
-
-    //Serial.println(readRegister(0x0));
     
     ISR_triggered = false;
   }
   
-  if(millis() - timeLoop2 > 60000)
+  if(millis() - timeLoop2 > 60000) //Every 60 seconds check for balancing off or on
   {
     balDone = true;
     
@@ -315,13 +348,13 @@ void loop() {
 boolean initializeBQ(byte inrptPin)
 {
   //Enable Init Bits ADC_EN and CC_EN and CC_CFG
-  OpenLCD.print("a");
+ 
   writeRegister(0x0B,0x19); //Data sheet specifies CC_CFG should be written 0x19
-  OpenLCD.print("b");
+
   byte sys_ctrl1 = readRegister(0x04); //Enabling ADC_EN
   sys_ctrl1 |= 1 << 4;
   writeRegister(0x04,sys_ctrl1);
-  OpenLCD.print("c");
+
   byte sys_ctrl2 = readRegister(0x05); //Enabling CC_EN
   sys_ctrl2 |= 1 << 6;
   writeRegister(0x05,sys_ctrl2);
@@ -329,23 +362,19 @@ boolean initializeBQ(byte inrptPin)
   //Initialize Gain and Offset used to calculate voltage from ADC reading
   
   gain = readGain() / (float)1000;
-  //Serial.print("Gain: ");
-  //Serial.print(gain);
-  //Serial.println("mV");OpenLCD.print("a");
   
   offset = readOffset();
-  //Serial.print("offset: ");
-  //Serial.print(offset);
-  //Serial.println("mV");
 
   //Initialize interrupt on pin 2 connected to the ALERT pin from the BQ
-  OpenLCD.print("d");
+
   pinMode(2, INPUT);
   attachInterrupt(0, alertPinISR, RISING);
-  //OpenLCD.print("e");
+
   //Initializing Overvoltage and UnderVoltage Threshholds
 
   initOVUV(3.80,2.80);
+
+  initSCDOCD();
 
   return(true);
 }
@@ -353,7 +382,8 @@ boolean initializeBQ(byte inrptPin)
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
 
-//Read a single register, a byte / 8 bits, specified address in the argument
+//////////////////////////////////////////////////////////////////////////////
+//Read a single register, a byte / 8 bits, specified address in the argument//
 
 void enDSGfet(boolean en)
 {
@@ -404,6 +434,13 @@ void lcdScreenOutput(byte buttonIncrement)
         OpenLCD.print(cellVolts[i-1]);
         OpenLCD.print(" ");
       }
+//          OpenLCD.print("00:");          //TESTING TAKE OUT
+//          OpenLCD.print(readRegister(0x00),HEX);
+//          OpenLCD.print(" 04:");
+//          OpenLCD.print(readRegister(0x04),HEX);
+//          OpenLCD.print("      05:");
+//          OpenLCD.print(readRegister(0x05),HEX);
+//          OpenLCD.print(" ");
       break;
     }
     case 2: //Pack Voltage and Temp
@@ -413,21 +450,21 @@ void lcdScreenOutput(byte buttonIncrement)
       OpenLCD.print("    ");
       OpenLCD.print("Temp: ");
       OpenLCD.print(temp); 
-      OpenLCD.print("      ");
+      OpenLCD.print("      ");    
       break;
     }
     case 3: //Percent Charge
     {
-      OpenLCD.print("Percent CHG: ");
-      OpenLCD.print("99%");
-      OpenLCD.print("Out Current: ");
+      OpenLCD.print("Per CHG: ");
+      OpenLCD.print(100 - (chargeP * 100));
+      OpenLCD.print("% ");
+      OpenLCD.print("Out Curr:");
       OpenLCD.print(outCurrent);
-      OpenLCD.print("A");
+      OpenLCD.print("A");     
       break;
     }
     default:
     {
-    //  Serial.print("LCD screen switch case not catching.");
       break;
     }
   }
@@ -441,9 +478,7 @@ byte readRegister(byte addrRegister)
   Wire.beginTransmission(bqAddr);
   Wire.write(addrRegister);
   Wire.endTransmission();
-
   Wire.requestFrom(bqAddr, 1);
-
   return (Wire.read());
 }
 
@@ -461,7 +496,6 @@ int doubleReadRegister(byte addrRegister)
   Wire.beginTransmission(bqAddr);
   Wire.write(addrRegister);
   Wire.endTransmission();
-
   Wire.requestFrom(bqAddr, 2);
 
   byte HI = Wire.read();
@@ -469,7 +503,6 @@ int doubleReadRegister(byte addrRegister)
 
   int together  = (int)HI << 8;
   together |= LO;
-
   return (together);
 }
 
@@ -504,7 +537,6 @@ int readGain()
   adcGain1 &= 0b00001100;
 
   byte adcGain = (adcGain1 << 1) | (adcGain2 >> 5);
-
   int gain = 365 + adcGain;
   
   return (gain);
@@ -513,7 +545,6 @@ int readGain()
 int readOffset()
 {
   byte offset = readRegister(0x51);
-
   return((int)offset);
 }
 
@@ -524,19 +555,14 @@ int readOffset()
 float readVoltages(byte numCell) 
 {
   if(numCell < 1 || numCell > 4) return 0;
-
   numCell -= 1;
-
   if(numCell == 3) numCell += 1;
   
   int decVal = doubleReadRegister(12 + numCell * 2);
-
   if(decVal == 0) return 0;
 
   float cellVoltage = decVal * gain + offset;
-
   cellVoltage /= (float)1000;
-
   return(cellVoltage);
 }
 
@@ -548,7 +574,6 @@ float readPackVoltage()
 
   float packVoltage = 4 * gain * adcPackVolt;
   packVoltage += 4 * offset;
-
   return(packVoltage / (float)1000);
 }
 
@@ -581,14 +606,11 @@ byte enableCellBalance(byte cellNum, boolean en)
 float readCC(void)
 {
   int count = doubleReadRegister(0x32);
-
   float count_uV = count * 8.44;
-
   return(count_uV);
 }
 
 //read the temp from the chips, 0 is the internal die temp and 1-3 are thermistors
-//WIP
 
 float readTemp(byte thermistorNum)
 {
@@ -598,17 +620,12 @@ float readTemp(byte thermistorNum)
   controlReg &= ~(1<<3);
   writeRegister(0x04,controlReg);
 
-  //Serial.println("Waiting 2...");
-  //delay(2000);
-
   int thermVal = doubleReadRegister(0x2C);
 
   float thermVolt = thermVal * (float)382;
-
   thermVolt /= (float)1000000;
 
-  float temperatureC = 25.0 - ((thermVolt - 1.2) / 0.0042);
-  
+  float temperatureC = 25.0 - ((thermVolt - 1.2) / 0.0042);  
   return(temperatureC);
   
 }
@@ -636,5 +653,71 @@ void initOVUV(float over, float under){
 
   writeRegister(0x09,overVal);
   writeRegister(0x0A,underVal);
+  
+}
+
+void initSCDOCD()
+{
+  byte scd = readRegister(0x06);
+  byte ocd = readRegister(0x07);
+
+  scd |= 0b10000011;
+  ocd |= 0b00001110;
+  
+  writeRegister(0x06,scd);
+  writeRegister(0x07,ocd);
+}
+
+void chargePercentage(float x)
+{
+  x = 1 - x;
+  if(0.8 <= x && x <= 1)
+  {
+    digitalWrite(5,HIGH); //Turn on all LEDS will be based off CHARGE PERCENT when done
+    digitalWrite(6,HIGH);
+    digitalWrite(7,HIGH);
+    digitalWrite(8,HIGH);
+    digitalWrite(9,HIGH);
+  }
+  else if(0.6 <= x && x < 0.8)
+  {
+    digitalWrite(5,HIGH); //Turn on all LEDS will be based off CHARGE PERCENT when done
+    digitalWrite(6,HIGH);
+    digitalWrite(7,HIGH);
+    digitalWrite(8,HIGH);
+    digitalWrite(9,LOW);
+  }
+    else if(0.4 <= x && x < 0.6)
+  {
+    digitalWrite(5,HIGH); //Turn on all LEDS will be based off CHARGE PERCENT when done
+    digitalWrite(6,HIGH);
+    digitalWrite(7,HIGH);
+    digitalWrite(8,LOW);
+    digitalWrite(9,LOW);
+  }
+    else if(0.2 <= x && x < 0.4)
+  {
+    digitalWrite(5,HIGH); //Turn on all LEDS will be based off CHARGE PERCENT when done
+    digitalWrite(6,HIGH);
+    digitalWrite(7,LOW);
+    digitalWrite(8,LOW);
+    digitalWrite(9,LOW);
+  }
+    else if(0 <= x && x < 0.2)
+  {
+    digitalWrite(5,HIGH); //Turn on all LEDS will be based off CHARGE PERCENT when done
+    digitalWrite(6,LOW);
+    digitalWrite(7,LOW);
+    digitalWrite(8,LOW);
+    digitalWrite(9,LOW);
+  }
+    else
+    {
+    digitalWrite(5,LOW); //Turn on all LEDS will be based off CHARGE PERCENT when done
+    digitalWrite(6,LOW);
+    digitalWrite(7,LOW);
+    digitalWrite(8,LOW);
+    digitalWrite(9,LOW);
+    }
   
 }
